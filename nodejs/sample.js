@@ -6,6 +6,11 @@ const bodyParser = require('body-parser');
 const hmac = require('crypto-js/hmac-sha256');
 const CryptoJS = require('crypto-js');
 
+require('dotenv').config();
+
+const uuid = require('uuid').v4;
+const firebaseAdmin = require('firebase-admin');
+
 /************************************************
  *            Config section start              *
  *         replace with your own values         *
@@ -17,6 +22,10 @@ const credentialTTL = 3600; // 1 hour
 /************************************************
  *            Config section finished           *
  ************************************************/
+
+const firebaseAdminApp = firebaseAdmin.initializeApp({
+  credential: firebaseAdmin.credential.cert(process.env.FIREBASE_ADMIN_JSON),
+});
 
 const app = express();
 app.use(bodyParser.json()); // support json encoded bodies
@@ -69,6 +78,73 @@ app.post('/authenticate', (req, res) => {
     // Session token check failed
     res.status(401).send('Authentication Failed');
   });
+});
+
+app.post('/rooms', (req, res) => {
+  const { targetUid: meetWith, mode: roomType } = req.body;
+  const sessionToken = req.headers.authorization.replace(/^Bearer /, '');
+
+  if (meetWith === undefined || roomType === undefined) {
+    res.status(400).send('Bad Request');
+    return;
+  }
+
+  firebaseAdminApp
+    .auth()
+    .verifyIdToken(sessionToken)
+    .then((v) => {
+      if (v.interviewer !== true) {
+        throw res.status(403);
+      }
+      return v.uid;
+    })
+    .then((uid) =>
+      firebaseAdminApp
+        .auth()
+        .getUser(meetWith)
+        .then((v) => v.uid)
+        .then((meetWith) => [uid, meetWith])
+        .catch((_) => {
+          throw res.status(400);
+        })
+    )
+    .then(([uid, meetWith]) => {
+      const createdAt = Date.now();
+      const roomId = uuid().slice(0, 18);
+
+      return Promise.all([
+        firebaseAdminApp
+          .firestore()
+          .collection('chats')
+          .doc(uid)
+          .collection('rooms')
+          .add({
+            meetWith,
+            roomId,
+            roomType,
+            createdAt,
+          }),
+        firebaseAdminApp
+          .firestore()
+          .collection('chats')
+          .doc(meetWith)
+          .collection('rooms')
+          .add({
+            meetWith: uid,
+            roomId,
+            roomType,
+            createdAt,
+          }),
+      ]);
+    })
+    .then(() => res.status(201).send())
+    .catch((r) => {
+      if (r.send !== undefined) {
+        r.send();
+        return;
+      }
+      res.status(400).send();
+    });
 });
 
 const listener = app.listen(process.env.PORT || 8080, () => {
