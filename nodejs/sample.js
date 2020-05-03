@@ -16,7 +16,7 @@ const firebaseAdmin = require('firebase-admin');
  *         replace with your own values         *
  ************************************************/
 
-const secretKey = 'YourSecretKey'; // replace with your own secretKey from the dashboard
+const secretKey = process.env.SKYWAY_PRIVATE_KEY; // replace with your own secretKey from the dashboard
 const credentialTTL = 3600; // 1 hour
 
 /************************************************
@@ -53,14 +53,15 @@ app.use(function (req, res, next) {
 
 app.post('/authenticate', (req, res) => {
   const peerId = req.body.peerId;
-  const sessionToken = req.body.sessionToken;
+  const sessionToken = req.headers.authorization.replace(/^Bearer /, '');
 
-  if(peerId === undefined || sessionToken === undefined) {
+  if (peerId === undefined) {
     res.status(400).send('Bad Request');
     return;
   }
 
-  checkSessionToken(peerId, sessionToken).then(() => {
+  checkSessionToken(peerId, sessionToken)
+    .then(() => {
     // Session token check was successful.
 
     // We need the current unix timestamp. Date.now() returns in milliseconds so divide by 1000 to get seconds.
@@ -70,11 +71,12 @@ app.post('/authenticate', (req, res) => {
       peerId: peerId,
       timestamp: unixTimestamp,
       ttl: credentialTTL,
-      authToken: calculateAuthToken(peerId, unixTimestamp)
+        authToken: calculateAuthToken(peerId, unixTimestamp),
     };
 
     res.send(credential);
-  }).catch(() => {
+    })
+    .catch(() => {
     // Session token check failed
     res.status(401).send('Authentication Failed');
   });
@@ -152,10 +154,54 @@ const listener = app.listen(process.env.PORT || 8080, () => {
 });
 
 function checkSessionToken(peerId, token) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     // Implement checking whether the session is valid or not.
     // Resolve if the session token is valid.
     // Reject if it is invalid.
+
+    const [roomId, uid] = peerId.split('_', 2);
+
+    const maybeChanRooms = await firebaseAdminApp
+      .auth()
+      .verifyIdToken(token)
+      .then((user) => {
+        if (user.uid !== uid) {
+          // Todo: Custom Exception
+          console.error(`invalid idToken passed, uid not matched`);
+          throw new Error();
+        }
+        return user.uid;
+      })
+      .then((uid) =>
+        firebaseAdminApp
+          .firestore()
+          .collection('chats')
+          .doc(uid)
+          .collection('rooms')
+          .get()
+          .then((snapshot) => {
+            const data = snapshot.docs.map((d) => ({
+              id: d.id,
+              roomId: d.data().roomId,
+              meetWith: d.data().meetWith,
+              roomType: d.data().roomType,
+              createdAt: new Date(d.data().createdAt),
+              // expiredAt?
+            }));
+            return data;
+          })
+      )
+      .then(
+        (v) =>
+          v.filter(
+            (c) => c.roomId === roomId
+          ) /* 有効期限切れじゃないか確認したい */
+      );
+
+    if (maybeChanRooms.length !== 1) {
+      //
+      return reject(new Error());
+    }
 
     resolve();
   });
