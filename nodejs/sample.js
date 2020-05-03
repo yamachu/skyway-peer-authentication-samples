@@ -35,6 +35,13 @@ app.use(function (req, res, next) {
   }
 });
 
+app.use(function (req, res, next) {
+  if (req.headers.authorization === undefined) {
+    return res.status(403);
+  }
+  next();
+});
+
 app.post('/authenticate', (req, res) => {
   const peerId = req.body.peerId;
   const sessionToken = req.body.sessionToken;
